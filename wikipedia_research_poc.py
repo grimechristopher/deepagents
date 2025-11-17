@@ -111,56 +111,32 @@ def wikipedia_get_section(page_title: str, section_title: str) -> dict:
 # System prompt to guide the agent
 RESEARCH_INSTRUCTIONS = """You are an expert research analyst and writer.
 
-Your job is to:
-1. Conduct thorough research on the given topic using Wikipedia tools
-2. Search for multiple aspects of the topic to get comprehensive information
-3. Synthesize the information into a well-structured, polished report
-4. Use the file system to save your research notes and final report
+Use wikipedia_search to research the topic, then write a complete markdown report directly to the user.
 
-## Available Tools
-
-### wikipedia_search
-Use this to search for Wikipedia articles on a topic. Returns:
-- Summary of the page
-- List of sections in the article
-- Related topics you can explore
-- URL to the full article
-
-### wikipedia_get_section
-Use this to get detailed content from a specific section of a Wikipedia page.
-Useful for diving deep into particular aspects of a topic.
-
-## Research Process
-
-When researching:
-- Break down complex topics into specific research questions
-- Use the write_todos tool to plan your research steps
-- Start with wikipedia_search to get an overview
-- Use wikipedia_get_section to dive deep into specific aspects
-- Explore related topics for comprehensive coverage
-- Save intermediate findings using write_file
-- Synthesize everything into a final report
+IMPORTANT: Write the ENTIRE report in your final response. Do NOT use write_file. Do NOT say you saved anything.
 
 ## Report Format
 
-Your final report should include:
-- **Executive Summary**: Brief overview of key findings
-- **Introduction**: Background and context
-- **Main Body**: Detailed findings organized by theme/subtopic
-- **Key Insights**: Important takeaways
-- **Sources**: List Wikipedia articles consulted (with URLs)
+Write a complete report with these sections:
 
-Save the final report as 'research_report.md' using the write_file tool.
+# [Topic Name]
 
-## Example Workflow
+## Executive Summary
+Brief overview of key findings
 
-1. Use write_todos to plan research approach
-2. Use wikipedia_search to get overview of main topic
-3. Use wikipedia_search on related topics for broader context
-4. Use wikipedia_get_section to get detailed information on specific aspects
-5. Use write_file to save notes from each search
-6. Synthesize findings into final report
-7. Save report as 'research_report.md'
+## Introduction
+Background and context
+
+## Main Findings
+Detailed information organized by subtopics
+
+## Key Insights
+Important takeaways
+
+## Sources
+- List Wikipedia articles with URLs
+
+Remember: Return the COMPLETE report text in your response.
 """
 
 
@@ -200,7 +176,7 @@ def main():
     )
 
     # Example topic - you can change this!
-    topic = "Quantum computing"
+    topic = "The confirmed physical attributes of Jesus Christ"
 
     print(f"Researching topic: {topic}")
     print()
@@ -242,18 +218,41 @@ def main():
         print("Research Complete!")
         print("=" * 80)
         print()
-        print("Final response from agent:")
+
+        # Extract the actual report content from all AI messages
+        report_content = []
+        for msg in result["messages"]:
+            if hasattr(msg, 'content') and msg.content:
+                # Check if this looks like report content (has sections/headers)
+                content = msg.content
+                if any(marker in content for marker in ["##", "**Executive Summary**", "Introduction", "Sources"]):
+                    # This looks like the actual report
+                    if len(content) > 200:  # Substantial content
+                        report_content.append(content)
+
+        # If we found report content, use it; otherwise use the last message
+        if report_content:
+            # Use the longest content (likely the full report)
+            final_response = max(report_content, key=len)
+            print("✅ Found comprehensive report in agent messages!")
+        else:
+            # Fallback to last message
+            final_response = result["messages"][-1].content
+            print("⚠️  Using last message (report may be incomplete)")
+
+        print()
+        print("Report preview (first 500 chars):")
         print("-" * 80)
-        final_response = result["messages"][-1].content
-        print(final_response)
+        print(final_response[:500] + "..." if len(final_response) > 500 else final_response)
         print()
 
-        # Save the response to a file since the agent might not have done it
+        # Save the report to a file
         output_file = "research_report.md"
         with open(output_file, "w") as f:
             f.write(final_response)
 
         print(f"✅ Report saved to: {output_file}")
+        print(f"   ({len(final_response)} characters, {len(final_response.split())} words)")
         print()
 
     except Exception as e:
