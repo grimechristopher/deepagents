@@ -175,7 +175,7 @@ def main():
     )
 
     # Example topic - you can change this!
-    topic = "how to catch Bulbasaur in Pokemon Go"
+    topic = "What are the permit requirements for building a backyard ADU in Los Angeles County in 2025"
 
     print(f"Topic: {topic}")
     print()

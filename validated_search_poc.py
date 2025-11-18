@@ -2,21 +2,23 @@
 Proof of Concept: Validated Web Search Agent with Fact-Checking
 
 This agent researches topics, extracts claims, and validates them with a fact-checker subagent.
-Uses LM Studio for local LLM inference and DuckDuckGo for web search.
+Uses Azure OpenAI (GPT-4o) and DuckDuckGo for web search.
 
 Requirements:
     pip install deepagents ddgs requests beautifulsoup4 python-dotenv langchain-openai
 
 Setup:
-    1. Start LM Studio with local server enabled (default: http://localhost:1234)
-    2. Load a model in LM Studio
-    3. (Optional) Create .env file to customize LM_STUDIO_URL
+    1. Create .env file with Azure OpenAI credentials:
+       AZURE_OPENAI_API_KEY=your-api-key
+       AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
+       AZURE_OPENAI_DEPLOYMENT_NAME=gpt-4o
+       AZURE_OPENAI_API_VERSION=2024-08-01-preview
 """
 
 import os
 from dotenv import load_dotenv
 from deepagents import create_deep_agent
-from langchain_openai import ChatOpenAI
+from langchain_openai import AzureChatOpenAI
 from langchain_core.tools import tool
 from ddgs import DDGS
 import requests
@@ -100,26 +102,38 @@ NEEDS_MORE_RESEARCH: [YES if LOW confidence or unresolved conflicts, NO otherwis
 
 
 def main():
-    """Run the validated search agent with local LLM."""
+    """Run the validated search agent with Azure OpenAI."""
 
-    # Get LM Studio URL from environment or use default
-    lm_studio_url = os.getenv("LM_STUDIO_URL", "http://localhost:1234/v1")
-    model_name = os.getenv("LM_STUDIO_MODEL", "qwen2.5-14b-instruct")
+    # Get Azure OpenAI credentials from environment
+    azure_api_key = os.getenv("AZURE_OPENAI_API_KEY")
+    azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+    azure_deployment = os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "gpt-4o")
+    azure_api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-08-01-preview")
+
+    # Validate required credentials
+    if not azure_api_key or not azure_endpoint:
+        raise ValueError(
+            "Missing Azure OpenAI credentials. Please set:\n"
+            "  AZURE_OPENAI_API_KEY\n"
+            "  AZURE_OPENAI_ENDPOINT\n"
+            "in your .env file"
+        )
 
     print("=" * 80)
-    print(f"Validated Search Agent: {model_name}")
+    print(f"Validated Search Agent: Azure OpenAI ({azure_deployment})")
     print("=" * 80)
     print()
 
-    local_llm = ChatOpenAI(
-        base_url=lm_studio_url,
-        api_key="not-needed",  # LM Studio doesn't require API key
+    azure_llm = AzureChatOpenAI(
+        azure_endpoint=azure_endpoint,
+        api_key=azure_api_key,
+        azure_deployment=azure_deployment,
+        api_version=azure_api_version,
         temperature=0.7,
-        model=model_name,
     )
 
     # Example query - you can change this!
-    query = "How to catch Bulbasaur in Pokemon Go"
+    query = "Who were in the main cast of Gilligans Island, and what are some notable facts about each actor?"
 
     print(f"Query: {query}")
     print()
@@ -131,7 +145,7 @@ def main():
     print()
 
     try:
-        direct_response = local_llm.invoke([
+        direct_response = azure_llm.invoke([
             {
                 "role": "user",
                 "content": f"Answer this question concisely with the right amount of detail: {query}"
@@ -163,7 +177,7 @@ def main():
     # ===== MAIN AGENT =====
 
     agent = create_deep_agent(
-        model=local_llm,
+        model=azure_llm,
         tools=[ddg_search, crawl_webpage],
         subagents=[validation_subagent],
         system_prompt="""Research workflow:
@@ -179,6 +193,14 @@ Cite sources when relevant. Be direct and to the point."""
 
     try:
         result = None
+        tool_call_counts = {
+            'ddg_search': 0,
+            'crawl_webpage': 0,
+            'task': 0,
+            'other': 0
+        }
+
+        print("  Starting agent stream...")
         for chunk in agent.stream(
             {"messages": [{"role": "user", "content": query}]},
             stream_mode="values"
@@ -189,32 +211,90 @@ Cite sources when relevant. Be direct and to the point."""
                 # Track tool calls
                 if hasattr(msg, 'tool_calls') and msg.tool_calls:
                     for tool_call in msg.tool_calls:
-                        tool_name = tool_call.get('name', 'unknown')
+                        tool_name = getattr(tool_call, 'name', tool_call.get('name', 'unknown') if isinstance(tool_call, dict) else 'unknown')
 
                         if tool_name == 'ddg_search':
-                            query_text = tool_call['args'].get('query', 'N/A')
+                            tool_call_counts['ddg_search'] += 1
+                            args = getattr(tool_call, 'args', tool_call.get('args', {}) if isinstance(tool_call, dict) else {})
+                            query_text = args.get('query', 'N/A') if isinstance(args, dict) else 'N/A'
                             print(f"  🔍 Searching: {query_text}")
 
                         elif tool_name == 'crawl_webpage':
-                            url = tool_call['args'].get('url', 'N/A')
+                            tool_call_counts['crawl_webpage'] += 1
+                            args = getattr(tool_call, 'args', tool_call.get('args', {}) if isinstance(tool_call, dict) else {})
+                            url = args.get('url', 'N/A') if isinstance(args, dict) else 'N/A'
                             print(f"  📄 Crawling: {url[:70]}...")
 
                         elif tool_name == 'task':
+                            tool_call_counts['task'] += 1
                             print(f"  ✓ Validating claim...")
+
+                        else:
+                            tool_call_counts['other'] += 1
+                            print(f"  🔧 Tool: {tool_name}")
 
                 result = chunk
 
         print()
 
+        # Recount all tool calls from the final result to ensure accuracy
+        if result and "messages" in result:
+            final_counts = {
+                'ddg_search': 0,
+                'crawl_webpage': 0,
+                'task': 0,
+                'other': 0
+            }
+
+            for msg in result["messages"]:
+                if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                    for tool_call in msg.tool_calls:
+                        tool_name = getattr(tool_call, 'name', tool_call.get('name', 'unknown') if isinstance(tool_call, dict) else 'unknown')
+                        if tool_name == 'ddg_search':
+                            final_counts['ddg_search'] += 1
+                        elif tool_name == 'crawl_webpage':
+                            final_counts['crawl_webpage'] += 1
+                        elif tool_name == 'task':
+                            final_counts['task'] += 1
+                        else:
+                            final_counts['other'] += 1
+
+            print("  Tool Call Summary:")
+            print(f"    - DuckDuckGo searches: {final_counts['ddg_search']}")
+            print(f"    - Webpage crawls: {final_counts['crawl_webpage']}")
+            print(f"    - Validation tasks (subagent): {final_counts['task']}")
+            if final_counts['other'] > 0:
+                print(f"    - Other tools: {final_counts['other']}")
+            print(f"    - Total tool calls: {sum(final_counts.values())}")
+        else:
+            print("  Tool Call Summary:")
+            print(f"    - No tool calls detected")
+
+        print()
+        print(f"  Agent completed. Result: {result is not None}")
+
         # Extract final response
         if result:
             final_response = None
-            for msg in result["messages"]:
-                if hasattr(msg, 'content') and msg.content:
-                    content = msg.content
-                    # Look for substantial content without tool calls
-                    if len(content) > 100 and not hasattr(msg, 'tool_calls'):
+            # Look through messages in reverse to find the last AI message with content
+            for msg in reversed(result["messages"]):
+                if hasattr(msg, 'content') and msg.content and isinstance(msg.content, str):
+                    content = msg.content.strip()
+                    # Skip if it's just a tool call message
+                    has_tool_calls = hasattr(msg, 'tool_calls') and msg.tool_calls and len(msg.tool_calls) > 0
+                    if len(content) > 100 and not has_tool_calls:
                         final_response = content
+                        break
+
+            # Debug: print message info if no response found
+            if not final_response:
+                print("  Debug: Message types in result:")
+                for i, msg in enumerate(result["messages"]):
+                    msg_type = type(msg).__name__
+                    has_content = hasattr(msg, 'content') and msg.content
+                    content_len = len(msg.content) if has_content else 0
+                    has_tools = hasattr(msg, 'tool_calls') and msg.tool_calls
+                    print(f"    [{i}] {msg_type}: content_len={content_len}, has_tool_calls={has_tools}")
         else:
             final_response = None
 
@@ -238,13 +318,16 @@ Cite sources when relevant. Be direct and to the point."""
 
     except Exception as e:
         print(f"❌ Error: {e}")
+        print(f"❌ Error type: {type(e).__name__}")
+        import traceback
+        print("\nFull traceback:")
+        traceback.print_exc()
         print()
         print("Troubleshooting:")
-        print("  - Make sure LM Studio is running with a loaded model")
-        print("  - Check server is enabled in Settings")
-        print(f"  - Verify URL: {lm_studio_url}")
+        print("  - Verify Azure OpenAI credentials in .env file")
+        print("  - Check endpoint URL format")
+        print("  - Confirm deployment name matches your Azure resource")
         print()
-        raise
 
 
 if __name__ == "__main__":
