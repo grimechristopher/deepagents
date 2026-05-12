@@ -213,3 +213,7 @@ __marimo__/
 .claude
 
 .idea
+
+# Test output reports
+*_report*.md
+*_response*.md
